@@ -1,0 +1,39 @@
+version: "3"
+
+vars:
+  url: http://localhost:8080
+
+tasks:
+  build:
+    desc: Build the image
+    cmds:
+      - docker compose build
+
+  rebuild:
+    desc: Rebuild without cache and restart
+    cmds:
+      - docker compose build --no-cache
+      - docker compose up -d --force-recreate
+
+  start:
+    desc: Start the service ({{.url}})
+    cmds:
+      - docker compose up -d
+      - until curl -sf {{.url}}/api/files >/dev/null; do sleep 0.2; done
+      - cmd: open {{.url}}
+        platforms: [darwin]
+
+  stop:
+    desc: Stop the service
+    cmds:
+      - docker compose stop
+
+  destroy:
+    desc: Remove container and image (state files in ./data are kept)
+    cmds:
+      - docker compose down --rmi local
+
+  logs:
+    desc: Follow logs
+    cmds:
+      - docker compose logs -f
