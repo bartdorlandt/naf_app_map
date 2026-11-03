@@ -185,7 +185,8 @@ $("#create").onclick = async () => {
   await loadFiles(n);
   await save(); // persist the empty file so it shows up in the list
 };
-loadFiles().catch(e => status("error: " + e.message));
+// retry while the server is (re)starting instead of showing an empty board
+(function init() { loadFiles().catch(e => { status("waiting for server… " + e.message); setTimeout(init, 1000); }); })();
 </script>
 </body>
 </html>

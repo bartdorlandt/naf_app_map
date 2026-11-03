@@ -19,7 +19,9 @@ tasks:
     desc: Start the service ({{.url}})
     cmds:
       - docker compose up -d
-      - open {{.url}}
+      - until curl -sf {{.url}}/api/files >/dev/null; do sleep 0.2; done
+      - cmd: open {{.url}}
+        platforms: [darwin]
 
   stop:
     desc: Stop the service
