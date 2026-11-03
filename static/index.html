@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NAF App Map</title>
+<style>
+  :root { --bg:#fff; --card:#fff; --line:#cfd6dd; --fg:#1d2733; --muted:#66758a; --accent:#2f6fde; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#000; --card:#1f252c; --line:#36404b; --fg:#e4e9ef; --muted:#93a1b2; --accent:#6b9cff; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--card); }
+  header h1 { font-size:16px; margin:0 12px 0 0; }
+  #status { color:var(--muted); margin-left:auto; }
+  textarea { resize:vertical; }
+  :is(input, textarea, select):focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  select, input, textarea, button { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+  button { cursor:pointer; }
+  main { display:grid; gap:12px; padding:16px; grid-template-columns:repeat(3, 1fr);
+         grid-template-areas: "presentation presentation presentation" "observability orchestrator intent" "collector network executor"; }
+  .block { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px; min-height:140px; }
+  .block[data-block="presentation"] { justify-self:center; width:45%; }
+  .block.over { outline:2px dashed var(--accent); }
+  .block h2 { font-size:14px; margin:0 0 2px; display:flex; justify-content:space-between; }
+  .block p.desc { margin:0 0 8px; color:var(--muted); font-size:12px; }
+  #network { grid-area:network; display:flex; align-items:center; justify-content:center; color:var(--muted); border-style:dashed; }
+  .app { border:1px solid var(--line); border-radius:6px; padding:6px 8px; margin:6px 0; background:var(--bg); cursor:grab; }
+  .app b { display:block; }
+  .app small { color:var(--muted); white-space:pre-wrap; }
+  .app .tools { float:right; }
+  .app .tools button, h2 button { padding:0 6px; border:none; background:none; color:var(--muted); }
+  .app .tools button:hover, h2 button:hover { color:var(--accent); }
+  .app a { color:inherit; }
+  /* NAF brand guidelines §4: solid block color, black title, 67% black sub-label, translucent sub-boxes */
+  .block[data-block] { background:var(--c); border-color:var(--c); color:#000; }
+  .block[data-block] :is(p.desc, .app small, .tools button, h2 button) { color:#000a; }
+  .block[data-block] :is(.tools button, h2 button):hover { color:#000; }
+  .block[data-block] .app { background:#00000015; border-color:#00000020; }
+  #network { background:#64748b; border:none; color:#fff; }
+  dialog { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:10px; width:min(420px, 90vw); }
+  dialog::backdrop { background:#0008; }
+  dialog label { display:block; margin:8px 0; }
+  dialog input, dialog textarea { display:block; width:100%; margin-top:4px; }
+  dialog menu { display:flex; justify-content:flex-end; gap:8px; padding:0; margin:12px 0 0; }
+  .hint { padding:0 16px 16px; color:var(--muted); font-size:12px; }
+  @media (max-width:700px) { main { grid-template-columns:1fr; grid-template-areas:"presentation" "observability" "orchestrator" "intent" "collector" "executor" "network"; } .block[data-block="presentation"] { width:auto; justify-self:stretch; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>NAF App Map</h1>
+  <label>State file <select id="files"></select></label>
+  <input id="newname" placeholder="new-file.json" size="16">
+  <button id="create">New</button>
+  <span id="status"></span>
+</header>
+<main id="board"><div class="block" id="network">Network infrastructure</div></main>
+<div class="hint">Drag an app to move it. Hold <b>Alt/Option</b> while dropping to copy it instead. ⧉ duplicates in place.
+  Files live in <code>./data/</code> — one self-contained JSON per state, safe to share or commit.</div>
+<dialog id="dlg"><form method="dialog">
+  <label>Name <input name="name" required autofocus></label>
+  <label>Description <textarea name="description" rows="3"></textarea></label>
+  <label>Link <input name="url" type="url" placeholder="https://"></label>
+  <label>Code link <input name="code" type="url" placeholder="https://git…"></label>
+  <menu><button type="button" onclick="this.closest('dialog').close()">Cancel</button><button value="ok">Save</button></menu>
+</form></dialog>
+<script>
+const BLOCKS = {
+  presentation:  "User-facing interfaces: dashboards, GUIs, ITSM, CLI tools.",
+  intent:        "Logic and storage of the desired network state.",
+  orchestrator:  "Coordinates automation tasks, reacts to events.",
+  observability: "Persists the actual network state and processes it.",
+  executor:      "Performs tasks that change the network.",
+  collector:     "Retrieves the actual network state.",
+};
+const COLORS = {
+  presentation: "#f5c518", observability: "#00e676", orchestrator: "#00d4ff",
+  intent: "#ff6d2e", collector: "#f43f5e", executor: "#6366f1",
+};
+const SORT_LABEL = { manual: "⇅", asc: "A→Z", desc: "Z→A" };
+const SORT_NEXT = { manual: "asc", asc: "desc", desc: "manual" };
+let file = "", state = null, dragged = null;
+const $ = s => document.querySelector(s);
+const status = t => $("#status").textContent = t;
+const uid = () => crypto.randomUUID?.() ?? String(Date.now() + Math.random());
+
+async function api(method, url, body) {
+  const r = await fetch(url, { method, body: body && JSON.stringify(body), headers: { "Content-Type": "application/json" } });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error);
+  return j;
+}
+
+async function loadFiles(select) {
+  const { files, last } = await api("GET", "/api/files");
+  const pick = select || last || files[0] || "default.json";
+  if (!files.includes(pick)) files.push(pick);
+  $("#files").innerHTML = files.map(f => `<option${f === pick ? " selected" : ""}>${f}</option>`).join("");
+  await open(pick);
+}
+
+async function open(name) {
+  try {
+    state = await api("GET", "/api/state?file=" + encodeURIComponent(name));
+    file = name;
+    for (const b in BLOCKS) state.blocks[b] ??= [];
+    state.sort ??= {};
+    render(); status("loaded " + name);
+  } catch (e) { alert(e.message); }
+}
+
+async function save() {
+  try { await api("PUT", "/api/state?file=" + encodeURIComponent(file), state); status("saved " + new Date().toLocaleTimeString()); }
+  catch (e) { status("SAVE FAILED: " + e.message); }
+}
+
+function edit(app) {
+  const d = $("#dlg"), f = d.querySelector("form").elements;
+  for (const k of ["name", "description", "url", "code"]) f[k].value = app?.[k] ?? "";
+  d.returnValue = "";
+  d.showModal();
+  return new Promise(res => d.onclose = () => res(d.returnValue !== "ok" ? null : {
+    ...(app || { id: uid() }), name: f.name.value.trim(), description: f.description.value, url: f.url.value.trim(), code: f.code.value.trim(),
+  }));
+}
+
+function render() {
+  const board = $("#board");
+  board.querySelectorAll(".block:not(#network)").forEach(e => e.remove());
+  for (const [b, desc] of Object.entries(BLOCKS)) {
+    const el = document.createElement("section");
+    el.className = "block"; el.style.gridArea = b; el.dataset.block = b; el.style.setProperty("--c", COLORS[b]);
+    const mode = state.sort[b] || "manual";
+    el.innerHTML = `<h2>${b[0].toUpperCase() + b.slice(1)} <span><button title="Sort: ${mode} (click to change)">${SORT_LABEL[mode]}</button><button title="Add app">＋</button></span></h2><p class="desc">${desc}</p>`;
+    const [sortBtn, addBtn] = el.querySelectorAll("h2 button");
+    sortBtn.onclick = () => { state.sort[b] = SORT_NEXT[mode]; render(); save(); };
+    addBtn.onclick = async () => { const a = await edit(); if (a) { state.blocks[b].push(a); render(); save(); } };
+    // sort a view of [app, originalIndex] so manual order in the file stays intact
+    const items = state.blocks[b].map((a, i) => [a, i]);
+    if (mode !== "manual") items.sort(([x], [y]) => x.name.localeCompare(y.name, undefined, { sensitivity: "base", numeric: true }) * (mode === "asc" ? 1 : -1));
+    items.forEach(([a, i]) => el.append(card(a, b, i)));
+    el.ondragover = e => { e.preventDefault(); e.dataTransfer.dropEffect = e.altKey ? "copy" : "move"; el.classList.add("over"); };
+    el.ondragleave = () => el.classList.remove("over");
+    el.ondrop = e => {
+      e.preventDefault(); el.classList.remove("over");
+      if (!dragged) return;
+      const [from, i] = dragged; dragged = null;
+      const app = state.blocks[from][i];
+      if (e.altKey) state.blocks[b].push({ ...app, id: uid() });
+      else if (from !== b) { state.blocks[from].splice(i, 1); state.blocks[b].push(app); }
+      else return;
+      render(); save();
+    };
+    board.append(el);
+  }
+}
+
+// only http(s): blocks javascript: links from shared files
+const link = (href, text) => /^https?:\/\//i.test(href || "") &&
+  Object.assign(document.createElement("a"), { href, text, target: "_blank", rel: "noopener" });
+
+function card(a, b, i) {
+  const el = document.createElement("div");
+  el.className = "app"; el.draggable = true;
+  el.innerHTML = `<span class="tools"><button title="Duplicate">⧉</button><button title="Edit">✎</button><button title="Delete">✕</button></span><b></b><small></small>`;
+  const title = el.querySelector("b");
+  title.append(link(a.url, a.name) || a.name);
+  const code = link(a.code, "(code)");
+  if (code) title.append(" ", code);
+  el.querySelector("small").textContent = a.description || "";
+  const [dup, ed, del] = el.querySelectorAll(".tools button");
+  dup.onclick = () => { state.blocks[b].splice(i + 1, 0, { ...a, id: uid() }); render(); save(); };
+  ed.onclick = async () => { const n = await edit(a); if (n) { state.blocks[b][i] = n; render(); save(); } };
+  del.onclick = () => { if (confirm(`Delete "${a.name}" from ${b}?`)) { state.blocks[b].splice(i, 1); render(); save(); } };
+  el.ondragstart = e => { dragged = [b, i]; e.dataTransfer.effectAllowed = "copyMove"; e.dataTransfer.setData("text/plain", a.name); };
+  return el;
+}
+
+$("#files").onchange = e => open(e.target.value);
+$("#create").onclick = async () => {
+  let n = $("#newname").value.trim();
+  if (!n) return;
+  if (!n.endsWith(".json")) n += ".json";
+  $("#newname").value = "";
+  await loadFiles(n);
+  await save(); // persist the empty file so it shows up in the list
+};
+loadFiles().catch(e => status("error: " + e.message));
+</script>
+</body>
+</html>
