@@ -29,7 +29,7 @@ Requirements: [uv](https://docs.astral.sh/uv/) and [Task](https://taskfile.dev/)
 task run       # serves http://localhost:28080, Ctrl+C to stop
 ```
 
-Without Task: `uv run server.py` (port 28080 by default; set `PORT` to change it).
+Without Task: `uv run server.py` (port 8080 by default; set `PORT` to change it).
 
 The server listens on `127.0.0.1` only and rejects requests for any other host name, because it can read and write `.json` files anywhere your user can.
 
