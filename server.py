@@ -1,26 +1,69 @@
-"""NAF framework app mapper: tiny stdlib server. One JSON file per state in DATA_DIR."""
+# /// script
+# requires-python = ">=3.15"
+# dependencies = []
+# ///
+"""NAF framework app mapper: tiny stdlib server. Opens/saves any .json file on this machine."""
 import json
 import os
-import re
+import tempfile
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
+PORT = int(os.environ.get("PORT", 8080))
 STATIC_DIR = Path(__file__).parent / "static"
-LAST = DATA_DIR / ".last"
-NAME_RE = re.compile(r"^[\w.-]+\.json$")
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "naf-app-map" / "config.json"
 BLOCKS = ["presentation", "intent", "orchestrator", "observability", "executor", "collector"]
-
-
-def safe(name):
-    if not name or not NAME_RE.match(name):
-        raise ValueError(f"invalid file name: {name!r} (use letters, digits, _ . -, ending in .json)")
-    return DATA_DIR / name
+MAX_RECENT = 10
+# reject requests whose Host isn't local: blocks DNS-rebinding sites from reading/writing your files
+ALLOWED_HOSTS = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
 
 
 def empty():
     return {"blocks": {b: [] for b in BLOCKS}, "sort": {b: "asc" for b in BLOCKS}}
+
+
+def json_path(p):
+    f = Path(p).expanduser()
+    if not f.is_absolute() or f.suffix != ".json":
+        raise ValueError(f"need an absolute path to a .json file, got {p!r}")
+    return f.resolve()
+
+
+def check_map(data, what):
+    # refuse unrelated JSON (package.json, …) so it is never read into, written as, or overwritten by a map
+    if not isinstance(data, dict) or not isinstance(data.get("blocks"), dict):
+        raise ValueError(f"{what} is not a NAF app map (no 'blocks' object)")
+    return data
+
+
+def load_map(f):
+    return check_map(json.loads(f.read_text()), f)
+
+
+def recent():
+    try:
+        files = json.loads(CONFIG.read_text()).get("recent", [])
+    except (OSError, ValueError):
+        files = []
+    return [f for f in files if Path(f).is_file()]
+
+
+def remember(f):
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    files = [str(f)] + [r for r in recent() if r != str(f)]
+    CONFIG.write_text(json.dumps({"recent": files[:MAX_RECENT]}, indent=2))
+
+
+def browse(d):
+    d = Path(d or Path.home()).expanduser().resolve()
+    entries = [e for e in d.iterdir() if not e.name.startswith(".")]
+    return {
+        "dir": str(d),
+        "parent": str(d.parent) if d.parent != d else None,
+        "dirs": sorted((e.name for e in entries if e.is_dir()), key=str.lower),
+        "files": sorted((e.name for e in entries if e.is_file() and e.suffix == ".json"), key=str.lower),
+    }
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -36,44 +79,59 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def route(self):
+        if self.headers.get("Host") not in ALLOWED_HOSTS:
+            self.send_json({"error": "forbidden host"}, 403)
+            return None, None
         u = urlparse(self.path)
-        return u.path, parse_qs(u.query).get("file", [""])[0]
+        return u.path, {k: v[0] for k, v in parse_qs(u.query).items()}
 
     def do_GET(self):
-        path, name = self.route()
+        path, q = self.route()
+        if path is None:
+            return
         try:
-            if path == "/api/files":
-                last = LAST.read_text().strip() if LAST.exists() else ""
-                files = sorted(p.name for p in DATA_DIR.glob("*.json"))
-                return self.send_json({"files": files, "last": last if last in files else ""})
+            if path == "/api/recent":
+                return self.send_json({"recent": recent()})
+            if path == "/api/browse":
+                return self.send_json(browse(q.get("dir")))
             if path == "/api/state":
-                f = safe(name)
-                if not f.exists():
-                    return self.send_json(empty())
-                LAST.write_text(name)
-                return self.send_json(json.loads(f.read_text()))
-        except ValueError as e:
+                f = json_path(q.get("path", ""))
+                data = load_map(f)
+                remember(f)
+                return self.send_json({"path": str(f), "state": data})
+        except (ValueError, OSError) as e:
             return self.send_json({"error": str(e)}, 400)
         super().do_GET()
 
     def do_PUT(self):
-        path, name = self.route()
+        path, q = self.route()
+        if path is None:
+            return
         if path != "/api/state":
             return self.send_json({"error": "not found"}, 404)
         try:
-            f = safe(name)
-            data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            tmp = f.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=2) + "\n")
-            os.replace(tmp, f)  # atomic: no half-written state on crash
-            LAST.write_text(name)
-            self.send_json({"ok": True})
-        except (ValueError, json.JSONDecodeError) as e:
+            f = json_path(q.get("path", ""))
+            if q.get("create") and f.exists():
+                return self.send_json({"error": f"{f} already exists"}, 409)
+            if f.exists():
+                load_map(f)  # only ever overwrite files that are already NAF maps
+            data = check_map(json.loads(self.rfile.read(int(self.headers["Content-Length"]))), "request body") if not q.get("create") else empty()
+            # mkstemp: unique name, O_EXCL (never follows a planted symlink); replace is atomic, so no half-written file
+            fd, tmp = tempfile.mkstemp(dir=f.parent, prefix=f".{f.name}.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(json.dumps(data, indent=2) + "\n")
+                os.chmod(tmp, f.stat().st_mode if f.exists() else 0o644)  # mkstemp makes it 0600
+                os.replace(tmp, f)
+            except BaseException:
+                os.unlink(tmp)
+                raise
+            remember(f)
+            self.send_json({"path": str(f), "state": data})
+        except (ValueError, OSError) as e:
             self.send_json({"error": str(e)}, 400)
 
 
 if __name__ == "__main__":
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    port = int(os.environ.get("PORT", 8080))
-    print(f"serving on :{port}, data in {DATA_DIR.resolve()}")
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    print(f"serving on http://localhost:{PORT}, recent files in {CONFIG}", flush=True)
+    HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

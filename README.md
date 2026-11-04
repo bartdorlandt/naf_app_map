@@ -19,30 +19,23 @@ When you discuss an automation architecture, the same questions keep coming back
 - Drag an app to move it to another block. Hold **Alt/Option** while you drop to copy it instead. ⧉ duplicates it in place.
 - Sort per block: manual, A→Z or Z→A. New files default to A→Z.
 - Every change is saved to disk immediately. After a restart, the app opens the last file you used.
-- Switch between state files, or create new ones, from the menu at the top. Each state is its own file, so they never interfere with each other.
+- Open any map file on your machine, or create a new one in any folder, with the built-in folder browser (**Open / New…**). Recently used files are one click away in the **Recent** menu. Each map is its own file, so maps never interfere with each other.
 
 ## Getting started
 
-Requirements: [Docker](https://www.docker.com/) and [Task](https://taskfile.dev/).
+Requirements: [uv](https://docs.astral.sh/uv/) and [Task](https://taskfile.dev/). uv fetches Python 3.15 automatically if you don't have it. There are no other dependencies.
 
 ```sh
-task start     # build if needed, run, and open http://localhost:8080
+task run       # serves http://localhost:28080, Ctrl+C to stop
 ```
 
-| Task           | What it does                                          |
-|----------------|-------------------------------------------------------|
-| `task build`   | Build the image                                       |
-| `task rebuild` | Rebuild without cache and restart                     |
-| `task start`   | Start the service and open the browser                |
-| `task stop`    | Stop the service                                      |
-| `task destroy` | Remove container and image (files in `data/` remain)  |
-| `task logs`    | Follow logs                                           |
+Without Task: `uv run server.py` (port 28080 by default; set `PORT` to change it).
 
-Without Docker: `python3 server.py` (Python 3.9+, no dependencies). The data is then stored in `./data`.
+The server listens on `127.0.0.1` only and rejects requests for any other host name, because it can read and write `.json` files anywhere your user can.
 
 ## Data
 
-State files live in `./data/` (mounted into the container), one JSON file per map:
+Each map is a single JSON file, stored wherever you choose:
 
 ```json
 {
@@ -54,14 +47,16 @@ State files live in `./data/` (mounted into the container), one JSON file per ma
 }
 ```
 
-To share a map, copy its file into someone else's `data/` folder, or commit it to git.
+The app only opens files that have a `blocks` object, so it can't accidentally overwrite an unrelated JSON file. The list of recent files is kept in `~/.config/naf-app-map/config.json`.
+
+To share a map, send the file or commit it to git.
 
 ## How it is built
 
 This project is deliberately small:
 - `server.py`: a Python standard-library HTTP server that serves the page and reads and writes the JSON files.
-- `static/index.html`: a single HTML page in plain JavaScript, with native drag-and-drop and a `<dialog>` form.
-- `Dockerfile`, `compose.yaml`, `Taskfile.yml`: packaging and control.
+- `static/index.html`: a single HTML page in plain JavaScript, with native drag-and-drop and `<dialog>` forms.
+- `Taskfile.yml`: runs the service.
 
 ## License
 

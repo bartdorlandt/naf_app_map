@@ -16,10 +16,11 @@
   :is(input, textarea, select):focus { outline:2px solid var(--accent); outline-offset:-1px; }
   select, input, textarea, button { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
   button { cursor:pointer; }
-  main { display:grid; gap:12px; padding:16px; grid-template-columns:repeat(3, 1fr);
-         grid-template-areas: "presentation presentation presentation" "observability orchestrator intent" "collector network executor"; }
+  main { display:grid; gap:20px; padding:16px; grid-template-columns:repeat(3, 1fr);
+         grid-template-areas: "presentation presentation presentation" "observability orchestrator intent" "collector orchestrator executor" "network network network"; }
   .block { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px; min-height:140px; }
   .block[data-block="presentation"] { justify-self:center; width:45%; }
+  .block[data-block="orchestrator"] { margin:60px 0; }
   .block.over { outline:2px dashed var(--accent); }
   .block h2 { font-size:14px; margin:0 0 2px; display:flex; justify-content:space-between; }
   .block p.desc { margin:0 0 8px; color:var(--muted); font-size:12px; }
@@ -36,27 +37,31 @@
   .block[data-block] :is(p.desc, .app small, .tools button, h2 button) { color:#000a; }
   .block[data-block] :is(.tools button, h2 button):hover { color:#000; }
   .block[data-block] .app { background:#00000015; border-color:#00000020; }
-  #network { background:#64748b; border:none; color:#fff; }
+  #network { background:#64748b; border:none; color:#fff; min-height:60px; }
   dialog { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:10px; width:min(420px, 90vw); }
   dialog::backdrop { background:#0008; }
   dialog label { display:block; margin:8px 0; }
   dialog input, dialog textarea { display:block; width:100%; margin-top:4px; }
   dialog menu { display:flex; justify-content:flex-end; gap:8px; padding:0; margin:12px 0 0; }
+  #fb { width:min(600px, 90vw); }
+  #fblist { list-style:none; padding:0; margin:8px 0; max-height:50vh; overflow:auto; border:1px solid var(--line); border-radius:6px; }
+  #fblist li { padding:4px 8px; cursor:pointer; }
+  #fblist li:hover { background:color-mix(in srgb, var(--accent) 20%, transparent); }
+  #files { max-width:40vw; }
   .hint { padding:0 16px 16px; color:var(--muted); font-size:12px; }
-  @media (max-width:700px) { main { grid-template-columns:1fr; grid-template-areas:"presentation" "observability" "orchestrator" "intent" "collector" "executor" "network"; } .block[data-block="presentation"] { width:auto; justify-self:stretch; } }
+  @media (max-width:700px) { main { grid-template-columns:1fr; grid-template-areas:"presentation" "observability" "orchestrator" "intent" "collector" "executor" "network"; } .block[data-block="presentation"] { width:auto; justify-self:stretch; } .block[data-block="orchestrator"] { margin:0; } }
 </style>
 </head>
 <body>
 <header>
   <h1>NAF App Map</h1>
-  <label>State file <select id="files"></select></label>
-  <input id="newname" placeholder="new-file.json" size="16">
-  <button id="create">New</button>
+  <label>Recent <select id="files"></select></label>
+  <button id="browse">Open / New…</button>
   <span id="status"></span>
 </header>
 <main id="board"><div class="block" id="network">Network infrastructure</div></main>
 <div class="hint">Drag an app to move it. Hold <b>Alt/Option</b> while dropping to copy it instead. ⧉ duplicates in place.
-  Files live in <code>./data/</code> — one self-contained JSON per state, safe to share or commit.</div>
+  Each map is one self-contained JSON file, stored wherever you choose — safe to share or commit.</div>
 <dialog id="dlg"><form method="dialog">
   <label>Name <input name="name" required autofocus></label>
   <label>Description <textarea name="description" rows="3"></textarea></label>
@@ -64,6 +69,12 @@
   <label>Code link <input name="code" type="url" placeholder="https://git…"></label>
   <menu><button type="button" onclick="this.closest('dialog').close()">Cancel</button><button value="ok">Save</button></menu>
 </form></dialog>
+<dialog id="fb">
+  <label>Folder <input id="fbdir" title="Type a path and press Enter"></label>
+  <ul id="fblist"></ul>
+  <label>New file in this folder <input id="fbnew" placeholder="my-map.json"></label>
+  <menu><button type="button" onclick="this.closest('dialog').close()">Cancel</button><button type="button" id="fbcreate">Create</button></menu>
+</dialog>
 <script>
 const BLOCKS = {
   presentation:  "User-facing interfaces: dashboards, GUIs, ITSM, CLI tools.",
@@ -91,26 +102,58 @@ async function api(method, url, body) {
   return j;
 }
 
-async function loadFiles(select) {
-  const { files, last } = await api("GET", "/api/files");
-  const pick = select || last || files[0] || "default.json";
-  if (!files.includes(pick)) files.push(pick);
-  $("#files").innerHTML = files.map(f => `<option${f === pick ? " selected" : ""}>${f}</option>`).join("");
-  await open(pick);
+const q = (path, extra = "") => "/api/state?path=" + encodeURIComponent(path) + extra;
+
+async function refreshRecent() {
+  const { recent } = await api("GET", "/api/recent");
+  $("#files").replaceChildren(...recent.map(p => {
+    const name = p.split("/").pop();
+    return new Option(`${name} — ${p.slice(0, -name.length - 1)}`, p, false, p === file);
+  }));
+  return recent;
 }
 
-async function open(name) {
+async function open(path) {
   try {
-    state = await api("GET", "/api/state?file=" + encodeURIComponent(name));
-    file = name;
+    const r = await api("GET", q(path));
+    state = r.state; file = r.path;
     for (const b in BLOCKS) state.blocks[b] ??= [];
     state.sort ??= {};
-    render(); status("loaded " + name);
+    render(); await refreshRecent(); status("loaded " + file);
+  } catch (e) { alert(e.message); refreshRecent(); }
+}
+
+// folder browser: navigate dirs, click a .json to open it, or create a new one here
+let fbDir = "";
+async function browseTo(dir) {
+  try {
+    const r = await api("GET", "/api/browse" + (dir ? "?dir=" + encodeURIComponent(dir) : ""));
+    fbDir = r.dir; $("#fbdir").value = r.dir;
+    const item = (text, onclick) => Object.assign(document.createElement("li"), { textContent: text, onclick });
+    $("#fblist").replaceChildren(
+      ...(r.parent ? [item("⬆ ..", () => browseTo(r.parent))] : []),
+      ...r.dirs.map(d => item("📁 " + d, () => browseTo(`${fbDir}/${d}`))),
+      ...r.files.map(f => item("📄 " + f, () => { $("#fb").close(); open(`${fbDir}/${f}`); })),
+    );
+  } catch (e) { alert(e.message); }
+}
+function openBrowser() {
+  browseTo(file ? file.slice(0, file.lastIndexOf("/")) : "");
+  $("#fbnew").value = "";
+  $("#fb").showModal();
+}
+async function createFile() {
+  let n = $("#fbnew").value.trim();
+  if (!n) return;
+  if (!n.endsWith(".json")) n += ".json";
+  try {
+    const r = await api("PUT", q(`${fbDir}/${n}`, "&create=1"));
+    $("#fb").close(); open(r.path);
   } catch (e) { alert(e.message); }
 }
 
 async function save() {
-  try { await api("PUT", "/api/state?file=" + encodeURIComponent(file), state); status("saved " + new Date().toLocaleTimeString()); }
+  try { await api("PUT", q(file), state); status("saved " + new Date().toLocaleTimeString()); }
   catch (e) { status("SAVE FAILED: " + e.message); }
 }
 
@@ -177,16 +220,15 @@ function card(a, b, i) {
 }
 
 $("#files").onchange = e => open(e.target.value);
-$("#create").onclick = async () => {
-  let n = $("#newname").value.trim();
-  if (!n) return;
-  if (!n.endsWith(".json")) n += ".json";
-  $("#newname").value = "";
-  await loadFiles(n);
-  await save(); // persist the empty file so it shows up in the list
-};
-// retry while the server is (re)starting instead of showing an empty board
-(function init() { loadFiles().catch(e => { status("waiting for server… " + e.message); setTimeout(init, 1000); }); })();
+$("#browse").onclick = openBrowser;
+$("#fbcreate").onclick = createFile;
+$("#fbnew").onkeydown = e => e.key === "Enter" && createFile();
+$("#fbdir").onkeydown = e => e.key === "Enter" && browseTo($("#fbdir").value);
+// retry while the server is (re)starting; no recent files yet → show the folder browser
+(async function init() {
+  try { const recent = await refreshRecent(); recent.length ? open(recent[0]) : openBrowser(); }
+  catch (e) { status("waiting for server… " + e.message); setTimeout(init, 1000); }
+})();
 </script>
 </body>
 </html>

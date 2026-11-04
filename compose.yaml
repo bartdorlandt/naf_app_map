@@ -1,9 +1,0 @@
-services:
-  naf-app-map:
-    build: .
-    image: naf-app-map
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./data:/data
-    restart: unless-stopped
