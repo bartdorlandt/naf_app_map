@@ -11,3 +11,16 @@ tasks:
     desc: Run the service on http://localhost:{{.port}} (Ctrl+C to stop)
     cmds:
       - uv run server.py
+
+  stop:
+    desc: Kill whatever is listening on port {{.port}}
+    cmds:
+      - lsof -ti tcp:{{.port}} -sTCP:LISTEN | xargs kill
+    status:
+      - "! lsof -ti tcp:{{.port}} -sTCP:LISTEN"
+
+  open:
+    desc: Open http://localhost:{{.port}} in the browser (macOS)
+    platforms: [darwin]
+    cmds:
+      - open http://localhost:{{.port}}
