@@ -7,9 +7,12 @@ env:
   PORT: "{{.port}}"
 
 tasks:
+  default: task -l --sort none
+
   run:
     desc: Run the service on http://localhost:{{.port}} (Ctrl+C to stop)
     cmds:
+      - task: open
       - uv run server.py
 
   stop:

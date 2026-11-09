@@ -134,4 +134,8 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(f"serving on http://localhost:{PORT}, recent files in {CONFIG}", flush=True)
-    HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    with HTTPServer(("127.0.0.1", PORT), Handler) as server:
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nstopped", flush=True)
